@@ -1,60 +1,35 @@
-# syntax=docker/dockerfile:1
+# Stage 1: Build & Data Processing
+FROM golang:1.27-alpine AS builder
 
-# Cross-compilation helpers (xx-go, xx-apk, xx-verify)
-FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.9.0 AS xx
-
-# Build stage
-# Runs on the build host's own architecture and cross-compiles for the target.
-# Building arm64 under QEMU emulation instead took ~16 of the release's ~19 minutes,
-# almost all of it compiling the bundled SQLite C source.
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
-
-COPY --from=xx / /
+# Install make, gcc, and musl-dev (required to compile SQLite C-bindings during make build)
+RUN apk add --no-cache make gcc musl-dev
 
 WORKDIR /build
 
-# clang/lld cross-compile the cgo parts; the target's C library comes from xx-apk.
-# SQLite itself is bundled with mattn/go-sqlite3, so sqlite-dev is not needed.
-RUN apk add --no-cache clang lld
-ARG TARGETPLATFORM
-RUN xx-apk add --no-cache gcc musl-dev
+# Copy your source code (including your git clone'd poetry submodules)
+COPY . .
 
-# Copy go mod files first for better caching
-COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+# Process the poetry text files into a solid, embedded SQLite database file
+RUN make process-data
 
-# Copy only necessary source files
-COPY cmd/ cmd/
-COPY internal/ internal/
+# Compile the Go application natively
+RUN CGO_ENABLED=1 go build -tags sqlite_fts5 -ldflags "-s -w" -trimpath -o server ./cmd/server
 
-# No -a: it forces every package to rebuild and defeats the build cache mount
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=1 xx-go build \
-    -tags sqlite_fts5 \
-    -ldflags "-extldflags '-static' -s -w" \
-    -trimpath \
-    -o server ./cmd/server \
-    && xx-verify --static server
+# Stage 2: Runtime Environment
+FROM alpine:3.20
 
-# Runtime stage
-FROM alpine:3.24
-
-# su-exec lets startup.sh drop root after fixing data-volume ownership
-RUN apk add --no-cache ca-certificates curl gzip su-exec zstd \
-    && addgroup -S poetry \
-    && adduser -S -G poetry -H -h /app poetry
+RUN apk add --no-cache ca-certificates curl
 
 WORKDIR /app
 
-RUN mkdir -p data && chown poetry:poetry data
+# Create the data directory
+RUN mkdir -p data
+# Copy the compiled binary, config file, and the freshly generated local database files from Stage 1
+COPY --from=builder /build/server .
+COPY --from=builder /build/config.yaml .
+COPY --from=builder /build/data/ ./data/
 
-# Copy binary, config, and startup script
-COPY --link --from=builder --chmod=755 /build/server .
-COPY --link --chmod=644 config.yaml .
-COPY --link --chmod=755 scripts/startup.sh .
-
-# Environment variables
+# Environment variables matching original defaults
 ENV PORT=1279 \
     GIN_MODE=release \
     RATE_LIMIT_ENABLED=true \
@@ -63,10 +38,5 @@ ENV PORT=1279 \
 
 EXPOSE 1279
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/api/v1/health || exit 1
-
-# The container starts as root only long enough for startup.sh to chown the
-# data volume (volumes created by older images are root-owned), then it
-# re-executes itself as the unprivileged poetry user.
-CMD ["./startup.sh"]
+# Direct execution bypasses startup.sh since data is already embedded in ./data
+CMD ["./server"]

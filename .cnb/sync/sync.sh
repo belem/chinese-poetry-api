@@ -85,14 +85,12 @@ do_pull() {
   fi
 }
 
-# 本仓库 develop 由 PR 保护：push 事件走到这里说明是自动同步引起的，跳过，避免自激
-if [ "${CNB_EVENT:-}" = "push" ]; then
-  log "push 事件触发的同步请走 PR 合入，本次跳过"
-  exit 0
-fi
-
 case "$MODE" in
-  push) do_push ;;
+  push)
+    # push 事件只在「PR 合入 develop」时放行（guard.sh 已把关），这正是要同步的那一次。
+    # 同步本身推的是 GitHub，不会再触发本仓库的 push，不存在自激。
+    do_push
+    ;;
   pull) do_pull ;;
   both) do_pull; do_push ;;
   *) log "未知模式: $MODE（可选 push / pull / both）"; exit 2 ;;

@@ -31,7 +31,7 @@ docs/
 config.local.yaml
 
 # Data directories
-data/
-poetry-data/
+# data/
+# poetry-data/
 
 # Keep only Go source and essential files

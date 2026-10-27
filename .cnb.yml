@@ -1,0 +1,69 @@
+# 本仓库 ⇄ belem/chinese-poetry-api 同步
+#
+# 约定：
+# - 两端只维护 develop 分支；任何变更都提 PR，不直推 develop。
+# - PR 合入 develop（pull_request.merged）→ 推到 GitHub 的 develop。
+# - 定时任务每 6 小时把 GitHub 侧的提交快进拉回来；需要立刻对齐时用页面按钮或 API 手动触发。
+# - 只做 fast-forward：两侧分叉就失败退出，交给人合，绝不强推。
+
+# 密钥仓库里的凭据文件（Web 端维护，禁止本地克隆/推送）。
+# 必须写在顶层：.cnb.yml 里的 ${VAR} 在解析期就展开，只在任务 env 里定义的变量此时还不存在。
+SECRETS_SLUG: npu-gpu-cpu/poem-source-secrets
+SECRETS_REF: main
+SECRETS_FILE: pair.yml
+
+$:
+  env:
+    SYNC_BRANCH: develop
+    GITHUB_API_REPO: belem/chinese-poetry-api
+  # 同步只是几次 git 操作，最小规格就够
+  runner:
+    cpus: 1
+
+develop:
+  # PR 合入 develop → 同步到 GitHub 的 develop
+  pull_request.merged:
+    - name: cnb-to-github
+      imports:
+        - https://cnb.cool/npu-gpu-cpu/poem-source-secrets/-/blob/main/pair.yml
+      stages:
+        - name: 推送到 GitHub
+          script: bash .cnb/sync/sync.sh push
+
+  # 反向兜底：GitHub 侧的提交每 6 小时合回来一次。
+  # 定时任务由平台调度，不受 allow_branches/allow_events 限制，自己也不读凭据，
+  # 只用 cnb:apply 转成 api_trigger_sync，让真正读密钥的流水线在 develop 上跑。
+  "crontab: 0 0,6,12,18 * * *":
+    - name: schedule-pull
+      stages:
+        - name: 触发 api_trigger_sync
+          type: cnb:apply
+          options:
+            event: api_trigger_sync
+            sync: true
+
+  # GitHub → CNB 的拉取（定时任务与手动触发都落在这里）
+  api_trigger_sync:
+    - name: github-to-cnb
+      imports:
+        - https://cnb.cool/npu-gpu-cpu/poem-source-secrets/-/blob/main/pair.yml
+      stages:
+        - name: 从 GitHub 拉取
+          script: bash .cnb/sync/sync.sh pull
+
+  # 页面按钮手动触发（按钮定义在 .cnb/web_trigger.yml），MODE=push / pull / both
+  web_trigger_sync:
+    - name: manual-sync
+      imports:
+        - https://cnb.cool/npu-gpu-cpu/poem-source-secrets/-/blob/main/pair.yml
+      stages:
+        - name: 同步
+          script: bash .cnb/sync/sync.sh "${MODE:-both}"
+
+  # 直推 develop 一律拒绝（含 auto-merge 这类绕过 PR 的推送）。
+  # 判断放在脚本里而不是 if：if 在任务执行时才求值，读不到执行前的 push 变量。
+  push:
+    - name: guard
+      stages:
+        - name: 检查是否走了 PR
+          script: bash .cnb/scripts/guard.sh

@@ -210,6 +210,21 @@ pie title 收录数据分布概览 (忽略极小值)
 "其他" : 76077
 ```
 
+## 同步（CNB ⇄ GitHub）
+
+源码同时维护在 CNB（`npu-gpu-cpu/poem-source-api`）和 GitHub（`belem/chinese-poetry-api`），
+两端**只有 `develop` 一个长期分支**，内容保持一致：
+
+1. 任何改动先开分支、提 PR，合入 `develop`。直推 `develop` 会被流水线拦下。
+2. PR 合并后，`.cnb.yml` 的 `pull_request.merged` 把 `develop` 推到 GitHub 的同名分支。
+3. 定时任务每 6 小时把 GitHub 侧的提交快进拉回 CNB；要立刻对齐就用 `develop` 页面上的「同步 GitHub」按钮，
+   或触发 `api_trigger_sync` 事件。
+
+同步只做 fast-forward，两侧分叉时直接失败退出——先本地 merge 再推，脚本不会强推覆盖任何一侧的提交。
+GitHub PAT 存在内部密钥仓库，由 `.cnb.yml` 的 `imports` 注入为 `GITHUB_API_TOKEN`，值不会出现在日志里。
+
+仓库不再使用 `poetry-data` 子模块（原指向外部数据集仓库），数据处理改由流水线在构建时拉取数据集。
+
 ## 致谢
 
 - 数据来源：[chinese-poetry](https://github.com/chinese-poetry/chinese-poetry)

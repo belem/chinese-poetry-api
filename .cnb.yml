@@ -2,7 +2,9 @@
 #
 # 约定：
 # - 两端只维护 develop 分支；任何变更都提 PR，不直推 develop。
-# - PR 合入 develop（pull_request.merged）→ 推到 GitHub 的 develop。
+# - PR 合入 develop → 推到 GitHub 的 develop。PR 相关事件属于「不可信事件」，
+#   密钥仓库的 allow_events 无法声明 pull_request.merged，所以这里挂在 push 上，
+#   用脚本判断是不是一次 PR 合入（guard.sh 负责拒绝直推）。
 # - 定时任务每 6 小时把 GitHub 侧的提交快进拉回来；需要立刻对齐时用页面按钮或 API 手动触发。
 # - 只做 fast-forward：两侧分叉就失败退出，交给人合，绝不强推。
 
@@ -21,12 +23,19 @@ $:
     cpus: 1
 
 develop:
-  # PR 合入 develop → 同步到 GitHub 的 develop
-  pull_request.merged:
+  # PR 合入 develop → 同步到 GitHub 的 develop。
+  # 不用 pull_request.merged：PR 事件是「不可信事件」，被引用的密钥文件必须用 allow_events
+  # 显式声明，而 allow_events 不接受 pull_request.merged，流水线会在 Prepare 阶段直接失败。
+  # push 是可信事件，且 PR 合入本来就会触发 push，两者等价且可用。
+  push:
     - name: cnb-to-github
       imports:
         - https://cnb.cool/npu-gpu-cpu/poem-source-secrets/-/blob/main/pair.yml
       stages:
+        # 直推 develop 一律拒绝（含 auto-merge 这类绕过 PR 的推送）。
+        # 判断放在脚本里而不是 if：if 在任务执行时才求值，读不到执行前的 push 变量。
+        - name: 检查是否走了 PR
+          script: bash .cnb/scripts/guard.sh
         - name: 推送到 GitHub
           script: bash .cnb/sync/sync.sh push
 
@@ -60,10 +69,3 @@ develop:
         - name: 同步
           script: bash .cnb/sync/sync.sh "${MODE:-both}"
 
-  # 直推 develop 一律拒绝（含 auto-merge 这类绕过 PR 的推送）。
-  # 判断放在脚本里而不是 if：if 在任务执行时才求值，读不到执行前的 push 变量。
-  push:
-    - name: guard
-      stages:
-        - name: 检查是否走了 PR
-          script: bash .cnb/scripts/guard.sh

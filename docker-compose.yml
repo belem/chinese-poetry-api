@@ -1,6 +1,6 @@
 services:
   poetry-api:
-    image: palemoky/chinese-poetry-api:latest
+    image: spovk/chinese-poetry-api:latest
     container_name: poetry-api
     restart: unless-stopped
     env_file: .env

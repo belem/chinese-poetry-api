@@ -60,6 +60,7 @@ git clone --recurse-submodules --depth=1 https://github.com/palemoky/chinese-poe
 
 ```bash
 git submodule update --init --depth 1
+git submodule update --remote --depth 1
 ```
 
 ## API 使用

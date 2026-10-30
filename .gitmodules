@@ -1,0 +1,7 @@
+# 本仓库不再提交 .gitmodules：poetry-data 子模块指向外部数据集仓库，
+# 会让两端同步时把数据集绑定死在配置里。
+# 本地想看数据时，自行把这段拷成 .gitmodules 并 git submodule update --init 即可。
+[submodule "poetry-data"]
+	path = poetry-data
+	url = https://github.com/belem/chinese-poetry.git
+	branch = develop

@@ -98,3 +98,63 @@ func TestLoadAuthorBios(t *testing.T) {
 		{Name: "苏轼", Description: "北宋文学家。", Dynasty: "宋"},
 	}, bios, "empty bios and subdirectories are skipped")
 }
+
+func TestInferDynastyFallsBackToPath(t *testing.T) {
+	assert.Equal(t, "明", inferDynasty("ming", "明诗", "明/诗/poet.ming.json"))
+	assert.Equal(t, "两汉", inferDynasty("han-shi", "汉诗（含文）", "汉/诗/poet.han.json"))
+	assert.Equal(t, "魏晋", inferDynasty("jin-shi", "晋诗（含文）", "晋/诗/poet.jin.json"))
+	assert.Equal(t, "五代", inferDynasty("wudai-shi", "五代十国诗", "五代十国/诗/poet.wudai.json"))
+	assert.Equal(t, "当代", inferDynasty("dang-poet", "当代旧体诗", "当/poet.dang.json"))
+	assert.Equal(t, "宋", inferDynasty("songshi", "全宋诗", "宋/诗/全宋诗/"))
+	assert.Equal(t, "魏晋", inferDynasty("caocao", "曹操诗集", "汉/曹操诗集/caocao.json"), "explicit mapping wins over the path")
+	assert.Equal(t, "其他", inferDynasty("guwen-guanzhi", "古文观止", "汇编/古文观止/"), "cross-dynasty anthologies stay undated")
+}
+
+func TestLoadAllCollectionAndStringParagraphs(t *testing.T) {
+	root := t.TempDir()
+	writeJSON(t, filepath.Join(root, "宋", "诗", "千家诗", "qianjiashi.json"), map[string]any{
+		"title":  "千家詩",
+		"author": "南宋謝枋得/明代王相",
+		"paragraphs": []map[string]any{{
+			"type": "七言絕句",
+			"content": []map[string]any{
+				{"chapter": "春日偶成", "author": "（宋）程顥", "paragraphs": []string{"雲淡風輕近午天，", "傍花隨柳過前川。"}},
+				{"chapter": "攜妓納涼晚際遇雨", "author": "（唐）杜甫", "paragraphs": []map[string]any{
+					{"subchapter": "其一", "paragraphs": []string{"落日放船好，", "輕風生浪遲。"}},
+					{"subchapter": "其二", "paragraphs": []string{"雨來沾席上，", "風急打船頭。"}},
+				}},
+				{"chapter": "題壁", "author": "無名氏", "paragraphs": []string{"一團茅草亂蓬蓬。"}},
+			},
+		}},
+	})
+	// 幽梦影的 paragraphs 是单个字符串而不是数组
+	writeJSON(t, filepath.Join(root, "清", "幽梦影", "youmengying.json"), []map[string]any{
+		{"paragraphs": "读经宜冬，其神专也。", "comment": []string{"曹秋岳曰"}},
+		{"paragraphs": ""},
+	})
+	writeJSON(t, filepath.Join(root, "loader", "datas.json"), map[string]any{
+		"cp_path": "./",
+		"datasets": map[string]any{
+			"qianjiashi":  map[string]any{"name": "千家詩", "id": 1, "path": "宋/诗/千家诗/qianjiashi.json", "tag": "paragraphs"},
+			"youmengying": map[string]any{"name": "幽梦影", "id": 2, "path": "清/幽梦影/youmengying.json", "tag": "paragraphs"},
+		},
+	})
+
+	l, err := NewJSONLoader(filepath.Join(root, "loader", "datas.json"))
+	require.NoError(t, err)
+	poems, err := l.LoadAll()
+	require.NoError(t, err)
+
+	type row struct{ Title, Author, Dynasty string }
+	var got []row
+	for _, p := range poems {
+		got = append(got, row{p.Title, p.Author, p.Dynasty})
+	}
+	assert.Equal(t, []row{
+		{"春日偶成", "程顥", "宋"},
+		{"攜妓納涼晚際遇雨·其一", "杜甫", "唐"},
+		{"攜妓納涼晚際遇雨·其二", "杜甫", "唐"},
+		{"題壁", "無名氏", "宋"}, // 没有朝代标注，沿用数据集的朝代
+		{"", "张潮", "清"},
+	}, got)
+}

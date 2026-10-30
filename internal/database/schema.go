@@ -17,7 +17,10 @@ var InitialDynastiesSQL = `INSERT OR IGNORE INTO dynasties (name, name_en, start
 	('五代', 'Five Dynasties', 907, 960),
 	('宋', 'Song', 960, 1279),
 	('元', 'Yuan', 1271, 1368),
+	('明', 'Ming', 1368, 1644),
 	('清', 'Qing', 1644, 1912),
+	('近现代', 'Modern', 1912, 1949),
+	('当代', 'Contemporary', 1949, NULL),
 	('其他', 'Other', NULL, NULL)`
 
 // InitialPoetryTypesSQL 是体裁表的初始数据。

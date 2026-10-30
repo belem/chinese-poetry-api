@@ -1,6 +1,7 @@
 package loader
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
@@ -36,6 +37,8 @@ type PoemData struct {
 	Rhythmic   string   `json:"rhythmic,omitempty"` // 词牌名，用于词
 	Content    string   `json:"content,omitempty"`  // 正文的备用字段
 	Para       []string `json:"para,omitempty"`     // 正文的备用字段
+
+	dynasty string // 作品自带的朝代（如《千家诗》作者前的「（唐）」），为空则沿用数据集的朝代
 }
 
 // JSONLoader 从 JSON 文件中加载诗词数据。
@@ -72,7 +75,7 @@ func NewJSONLoader(configPath string) (*JSONLoader, error) {
 	// 建立数据集 ID 到朝代的映射
 	idToDynasty := make(map[int]string)
 	for key, dataset := range config.Datasets {
-		idToDynasty[dataset.ID] = inferDynasty(key, dataset.Name)
+		idToDynasty[dataset.ID] = inferDynasty(key, dataset.Name, dataset.Path)
 	}
 
 	return &JSONLoader{
@@ -165,7 +168,7 @@ func (l *JSONLoader) loadDataset(key string, dataset DatasetInfo) ([]PoemWithMet
 			for _, poem := range filePoems {
 				poemWithMeta := PoemWithMeta{
 					PoemData:    poem,
-					Dynasty:     fileDyn,
+					Dynasty:     cmp.Or(poem.dynasty, fileDyn),
 					DatasetName: dataset.Name,
 					DatasetKey:  key,
 				}
@@ -190,7 +193,7 @@ func (l *JSONLoader) loadDataset(key string, dataset DatasetInfo) ([]PoemWithMet
 		for _, poem := range filePoems {
 			poemWithMeta := PoemWithMeta{
 				PoemData:    poem,
-				Dynasty:     dynasty,
+				Dynasty:     cmp.Or(poem.dynasty, dynasty),
 				DatasetName: dataset.Name,
 				DatasetKey:  key,
 			}
@@ -213,6 +216,11 @@ func (l *JSONLoader) loadJSONFile(path string, tag string) ([]PoemData, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// 顶层是对象而不是数组的文件是嵌套的选本（《千家诗》）
+	if bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
+		return loadCollection(data)
 	}
 
 	var rawPoems []map[string]any
@@ -245,7 +253,7 @@ func (l *JSONLoader) loadJSONFile(path string, tag string) ([]PoemData, error) {
 		// 按配置的 tag 提取正文
 		switch tag {
 		case "paragraphs":
-			poem.Paragraphs = getStringArray(raw, "paragraphs")
+			poem.Paragraphs = getParagraphs(raw, "paragraphs")
 		case "content":
 			if content, ok := raw["content"].(string); ok {
 				poem.Content = content
@@ -254,12 +262,12 @@ func (l *JSONLoader) loadJSONFile(path string, tag string) ([]PoemData, error) {
 				poem.Paragraphs = getStringArray(raw, "content")
 			}
 		case "para":
-			poem.Paragraphs = getStringArray(raw, "para")
+			poem.Paragraphs = getParagraphs(raw, "para")
 		default:
 			// 未指定则依次尝试各个可能的字段
-			if paras := getStringArray(raw, "paragraphs"); len(paras) > 0 {
+			if paras := getParagraphs(raw, "paragraphs"); len(paras) > 0 {
 				poem.Paragraphs = paras
-			} else if paras := getStringArray(raw, "para"); len(paras) > 0 {
+			} else if paras := getParagraphs(raw, "para"); len(paras) > 0 {
 				poem.Paragraphs = paras
 			} else if content, ok := raw["content"].(string); ok {
 				poem.Paragraphs = []string{content}
@@ -274,7 +282,36 @@ func (l *JSONLoader) loadJSONFile(path string, tag string) ([]PoemData, error) {
 	return poems, nil
 }
 
-func inferDynasty(key, name string) string {
+// dynastyByName 把朝代目录名（先秦、汉、五代十国……）与作者前的朝代标注（唐、南宋……）
+// 归到数据库里的朝代名，无法识别时返回空。汉、三国、晋沿用库里已有的「两汉」「魏晋」；
+// 辽金与宋同归「宋」，与 dynasties.json 的说明一致。
+func dynastyByName(label string) string {
+	switch label {
+	case "先秦", "南北朝", "隋", "唐", "元", "明", "清", "宋", "五代", "两汉", "魏晋", "近现代", "当代":
+		return label
+	case "汉":
+		return "两汉"
+	case "三国", "晋":
+		return "魏晋"
+	case "五代十国":
+		return "五代"
+	case "南宋", "北宋", "辽", "金":
+		return "宋"
+	case "近现":
+		return "近现代"
+	case "当":
+		return "当代"
+	}
+	return ""
+}
+
+// dynastyFromPath 按数据集路径的第一级目录判断朝代；汇编/ 这类跨代目录返回空。
+func dynastyFromPath(path string) string {
+	top, _, _ := strings.Cut(filepath.ToSlash(path), "/")
+	return dynastyByName(top)
+}
+
+func inferDynasty(key, name, path string) string {
 	// 数据集 key 到朝代的映射
 	dynastyMap := map[string]string{
 		"tangsong":          "唐",
@@ -308,7 +345,81 @@ func inferDynasty(key, name string) string {
 		return "元"
 	}
 
+	// 数据集按朝代分目录，新增的数据集不必逐个登记到上面的映射表
+	if dynasty := dynastyFromPath(path); dynasty != "" {
+		return dynasty
+	}
+
 	return "其他"
+}
+
+// collectionFile 是《千家诗》这类嵌套选本：顶层是书名与作者，
+// paragraphs 下按体裁分组，各组的 content 里逐首列出诗。
+type collectionFile struct {
+	Paragraphs []struct {
+		// Author 形如「（唐）孟浩然」；Paragraphs 是字符串数组，或带 subchapter 的若干组
+		Content []struct {
+			Chapter    string          `json:"chapter"`
+			Author     string          `json:"author"`
+			Paragraphs json.RawMessage `json:"paragraphs"`
+		} `json:"content"`
+	} `json:"paragraphs"`
+}
+
+// loadCollection 把嵌套选本展平成一首一条；带 subchapter（其一、其二）的拆成各自独立的诗。
+func loadCollection(data []byte) ([]PoemData, error) {
+	var file collectionFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	var poems []PoemData
+	for _, group := range file.Paragraphs {
+		for _, item := range group.Content {
+			dynasty, author := splitAuthorDynasty(item.Author)
+			add := func(title string, paragraphs []string) {
+				if len(paragraphs) > 0 {
+					poems = append(poems, PoemData{Title: title, Author: author, Paragraphs: paragraphs, dynasty: dynasty})
+				}
+			}
+
+			var lines []string
+			if err := json.Unmarshal(item.Paragraphs, &lines); err == nil {
+				add(item.Chapter, lines)
+				continue
+			}
+
+			var parts []struct {
+				Subchapter string   `json:"subchapter"`
+				Paragraphs []string `json:"paragraphs"`
+			}
+			if err := json.Unmarshal(item.Paragraphs, &parts); err != nil {
+				return nil, fmt.Errorf("unsupported paragraphs in %q: %w", item.Chapter, err)
+			}
+			for _, part := range parts {
+				title := item.Chapter
+				if part.Subchapter != "" {
+					title += "·" + part.Subchapter
+				}
+				add(title, part.Paragraphs)
+			}
+		}
+	}
+
+	return poems, nil
+}
+
+// splitAuthorDynasty 拆开「（唐）孟浩然」，朝代无法识别或没有标注时返回空朝代。
+func splitAuthorDynasty(author string) (dynasty, name string) {
+	rest, ok := strings.CutPrefix(author, "（")
+	if !ok {
+		return "", author
+	}
+	label, name, ok := strings.Cut(rest, "）")
+	if !ok {
+		return "", author
+	}
+	return dynastyByName(label), strings.TrimSpace(name)
 }
 
 // AuthorBio 是作者文件中的一条诗人小传。
@@ -421,6 +532,17 @@ func getString(m map[string]any, key string) string {
 		return v
 	}
 	return ""
+}
+
+// getParagraphs 取正文：多数数据是字符串数组，《幽梦影》等是单个字符串。
+func getParagraphs(m map[string]any, key string) []string {
+	if s, ok := m[key].(string); ok {
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	}
+	return getStringArray(m, key)
 }
 
 func getStringArray(m map[string]any, key string) []string {

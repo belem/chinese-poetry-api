@@ -56,12 +56,15 @@ make run-server    # 启动服务
 git clone --recurse-submodules --depth=1 https://github.com/palemoky/chinese-poetry-api.git
 ```
 
-如果已经克隆了仓库，可以单独更新 submodules：
+如果已经克隆了仓库，拉取数据并更新到 `develop` 分支最新提交：
 
 ```bash
-git submodule add -b develop --depth 1 https://github.com/belem/chinese-poetry.git poetry-data
-git submodule update --remote --depth 1 poetry-data
+git submodule update --init --depth 1 poetry-data   # 首次拉取，检出仓库记录的提交
+git submodule update --remote --depth 1 poetry-data # 更新到 develop 最新
+git add poetry-data && git commit -m "chore: bump poetry-data"
 ```
+
+数据集有更新后，需重新 `make process-data`（或重新 `docker build`）才会重建数据库，镜像内的 `data/poetry.db` 在构建时生成。
 
 ## API 使用
 
@@ -223,7 +226,6 @@ pie title 收录数据分布概览 (忽略极小值)
 同步只做 fast-forward，两侧分叉时直接失败退出——先本地 merge 再推，脚本不会强推覆盖任何一侧的提交。
 GitHub PAT 存在内部密钥仓库，由 `.cnb.yml` 的 `imports` 注入为 `GITHUB_API_TOKEN`，值不会出现在日志里。
 
-仓库不再使用 `poetry-data` 子模块（原指向外部数据集仓库），数据处理改由流水线在构建时拉取数据集。
 
 ## 致谢
 
